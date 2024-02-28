@@ -1,151 +1,242 @@
-import * as THREE from 'three';
-import { TransformControls } from 'three/addons/controls/TransformControls.js';
-import Stats from 'three/addons/libs/stats.module.js';
-import { Flow } from 'three/addons/modifiers/CurveModifier.js';
-import { FontLoader } from 'three/addons/loaders/FontLoader.js';
-import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+import * as THREE from "three";
+import Stats from "three/examples/jsm/libs/stats.module.js";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { PointerLockControls } from "three/examples/jsm/controls/PointerLockControls.js";
+// import * as dat from 'dat.gui';
+// import { GUI } from "https://cdn.skypack.dev/three/examples/jsm/libs/dat.gui.module.js";
+import { Sky } from "three/examples/jsm/objects/Sky.js";
 
-const ACTION_SELECT = 1,
-  ACTION_NONE = 0;
-const curveHandles = [];
-const mouse = new THREE.Vector2();
+const cameraWorldPosition = new THREE.Vector3();
+const cameraWorldDirection = new THREE.Vector3();
+const dollyVelocity = new THREE.Vector3();
+const dollyDirection = new THREE.Vector3();
 
-let stats;
-let scene,
-  camera,
-  renderer,
-  rayCaster,
-  control,
-  flow,
-  action = ACTION_NONE;
+let camera, scene, renderer, stats, controls, loader, raycaster;
+let prevTime = performance.now(),
+  time,
+  delta,
+  video,
+  curvedRectangle;
+
+let moveForward = false;
+let moveBackward = false;
+let moveLeft = false;
+let moveRight = false;
+let canJump = false;
 
 init();
 animate();
 
-function init() {
+function createScene() {
+  camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+
   scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x88ccff);
 
-  camera = new THREE.PerspectiveCamera(
-    40,
-    window.innerWidth / window.innerHeight,
-    1,
-    1000
-  );
-  camera.position.set(2, 2, 4);
-  camera.lookAt(scene.position);
+  camera.position.set(0, 0.2, 2.2);
+  camera.lookAt(0, 3, 0);
+  scene.add(camera);
+  scene.add(new THREE.AxesHelper(5));
+}
 
-  const initialPoints = [
-    { x: 1, y: 0, z: -1 },
-    { x: 1, y: 0, z: 1 },
-    { x: -1, y: 0, z: 1 },
-    { x: -1, y: 0, z: -1 },
-  ];
+function createLights() {
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0x000000, 1);
+  scene.add(ambientLight);
+  const hemiLight = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
+  scene.add(hemiLight);
 
-  const boxGeometry = new THREE.BoxGeometry(0.1, 0.1, 0.1);
-  const boxMaterial = new THREE.MeshBasicMaterial();
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+  dirLight.position.set(20, 20, 20);
+  scene.add(dirLight);
+}
 
-  for (const handlePos of initialPoints) {
-    const handle = new THREE.Mesh(boxGeometry, boxMaterial);
-    handle.position.copy(handlePos);
-    curveHandles.push(handle);
-    scene.add(handle);
-  }
+function createGrid() {
+  const helper = new THREE.GridHelper(20, 20);
+  helper.position.y = -0.0001;
+  //helper.rotateX(Math.PI/2);
+  scene.add(helper);
+}
 
-  const curve = new THREE.CatmullRomCurve3(
-    curveHandles.map((handle) => handle.position)
-  );
-  curve.curveType = 'centripetal';
-  curve.closed = true;
-  const ellipseCurve = (()=>{
-  const curve = new THREE.EllipseCurve(
-    0,  0,            // ax, aY
-    10, 10,           // xRadius, yRadius
-    0,  2 * Math.PI,  // aStartAngle, aEndAngle
-    false,            // aClockwise
-    0                 // aRotation
-  );
-  
-  const points = curve.getPoints( 50 );
-  const geometry = new THREE.BufferGeometry().setFromPoints( points );
-  
-  const material = new THREE.LineBasicMaterial( { color: 0xff0000 } );
-  
-  // Create the final object to add to the scene
-  const ellipse = new THREE.Line( geometry, material );
-    
-  return curve;
- })()
- 
+function createSky() {
+  const sky = new Sky();
+  sky.scale.setScalar(450000);
 
-  const points = curve.getPoints(50);
-  const line = new THREE.LineLoop(
-    new THREE.BufferGeometry().setFromPoints(points),
-    new THREE.LineBasicMaterial({ color: 0x00ff00 })
-  );
+  const sun = new THREE.Vector3();
 
-  scene.add(line);
+  const effectController = {
+    turbidity: 10,
+    rayleigh: 3,
+    mieCoefficient: 0.005,
+    mieDirectionalG: 0.7,
+    elevation: 0.1,
+    azimuth: 180,
+    exposure: renderer.toneMappingExposure,
+  };
 
-  //
+  const uniforms = sky.material.uniforms;
+  uniforms["turbidity"].value = effectController.turbidity;
+  uniforms["rayleigh"].value = effectController.rayleigh;
+  uniforms["mieCoefficient"].value = effectController.mieCoefficient;
+  uniforms["mieDirectionalG"].value = effectController.mieDirectionalG;
 
-  const light = new THREE.DirectionalLight(0xffaa33, 3);
-  light.position.set(-10, 10, 10);
-  scene.add(light);
+  const phi = THREE.MathUtils.degToRad(90 - effectController.elevation);
+  const theta = THREE.MathUtils.degToRad(effectController.azimuth);
+  sun.setFromSphericalCoords(1, phi, theta);
+  uniforms["sunPosition"].value.copy(sun);
 
-  const light2 = new THREE.AmbientLight(0x003973, 3);
-  scene.add(light2);
+  scene.add(sky);
+}
 
-  //
-
-  const loader = new FontLoader();
-  loader.load('fonts/helvetiker_regular.typeface.json', function (font) {
-    const geometry = new TextGeometry('Hello three.js!', {
-      font: font,
-      size: 0.2,
-      height: 0.05,
-      curveSegments: 12,
-      bevelEnabled: true,
-      bevelThickness: 0.02,
-      bevelSize: 0.01,
-      bevelOffset: 0,
-      bevelSegments: 5,
-    });
-
-    geometry.rotateX(Math.PI);
-
-    const material = new THREE.MeshStandardMaterial({
-      color: 0x99ffff,
-    });
-
-    const objectToCurve = new THREE.Mesh(geometry, material);
-
-    flow = new Flow(objectToCurve);
-    flow.updateCurve(0, ellipseCurve);
-    scene.add(flow.object3D);
-  });
-
-  //
-
-  renderer = new THREE.WebGLRenderer({ antialias: true });
+function createRenderer() {
+  renderer = new THREE.WebGLRenderer();
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
   document.body.appendChild(renderer.domElement);
+}
 
-  renderer.domElement.addEventListener('pointerdown', onPointerDown);
+function createControls() {
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.minDistance = 1;
+  controls.maxDistance = 200;
+  controls.enableDamping = true;
 
-  rayCaster = new THREE.Raycaster();
-  control = new TransformControls(camera, renderer.domElement);
-  // control.addEventListener('dragging-changed', function (event) {
-  //   if (!event.value) {
-  //     const points = curve.getPoints(50);
-  //     line.geometry.setFromPoints(points);
-  //     flow.updateCurve(0, curve);
-  //   }
-  // });
+  // controls = new PointerLockControls(camera, document.body);
 
+  renderer.domElement.addEventListener("click", () => {
+    // if (controls.isLocked) return;
+    // controls.lock();
+  });
+
+  document.addEventListener("keydown", onKeyDown, true);
+  document.addEventListener("keyup", onKeyUp, true);
+
+  // camera.position.set(0, 1, 4.2);
+
+  camera.getWorldPosition(cameraWorldPosition);
+  camera.getWorldDirection(cameraWorldDirection);
+
+
+}
+
+function createStats() {
   stats = new Stats();
   document.body.appendChild(stats.dom);
+}
 
-  window.addEventListener('resize', onWindowResize);
+function createRaycaster() {
+  raycaster = new THREE.Raycaster(cameraWorldPosition, cameraWorldDirection);
+  //raycaster = new THREE.Raycaster( new THREE.Vector3(), new THREE.Vector3( 0, - 1, 0 ), 0, 10 );
+  raycaster.set(cameraWorldPosition, cameraWorldDirection);
+}
+
+function onWebcamInput(stream) {
+  video.srcObject = stream;
+  video.play();
+}
+
+function onWebcamInputError(err) {
+  alert("Unable to access the camera/webcam: " + err.message);
+}
+
+function initWebcamInput() {
+  // if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+  //   alert("MediaDevices interface not available.");
+  //   return;
+  // }
+  // const constraints = {
+  //   video: {
+  //     width: 1280,
+  //     height: 720,
+  //     facingMode: "user",
+  //   },
+  // };
+  // navigator.mediaDevices.getUserMedia(constraints).then(onWebcamInput).catch(onWebcamInputError);
+}
+function createCircle(radius) {
+  const geometry = new THREE.CircleGeometry(radius, 32);
+  const material = new THREE.MeshBasicMaterial({ color: "#2f1e1e", side: THREE.DoubleSide });
+  const circle = new THREE.Mesh(geometry, material);
+
+  geometry.rotateX(Math.PI / 2);
+  // geometry.translate(0, 0, radius);
+  scene.add(circle);
+}
+function addLineHelper({ color = 0xff00f0, vector, length = 1 }) {
+  const origin = new THREE.Vector3(0, 0, 0);
+  const arrowHelper = new THREE.ArrowHelper(vector, origin, length, color);
+  scene.add(arrowHelper);
+}
+function createCurvedPlane({
+  imageUrls = ["img/rec1.png", "img/rec2.png", "img/rec3.png", "img/rec4.png"],
+  numbSides = 1,
+  radius = 1,
+} = {}) {
+  if (imageUrls) {
+    numbSides = imageUrls.length;
+  }
+  createCircle(radius);
+  let chuviCircle = 2 * Math.PI * radius;
+
+  const RATIO = 16 / 9;
+  video = document.getElementById("video");
+
+  // const texture = new THREE.VideoTexture(video);
+  // texture.minFilter = THREE.LinearFilter;
+  // texture.magFilter = THREE.LinearFilter;
+  // texture.format = THREE.RGBFormat;
+
+  let width = chuviCircle / numbSides;
+  let height = width / RATIO;
+  let textureLoader = new THREE.TextureLoader();
+  const textures = imageUrls.map((url) => textureLoader.load(url));
+  const geometry = new THREE.PlaneGeometry(width, height, 32, 32);
+  const positions = geometry.attributes.position;
+
+  const axis = new THREE.Vector3(0, 1, 0);
+  //
+  const axisPosition = new THREE.Vector3(0, 0, radius);
+
+  addLineHelper({ color: 0xff0000, vector: axis, length: axis.length() });
+  addLineHelper({ color: 0xff0000, vector: axisPosition, length: axisPosition.length() });
+  const vTemp = new THREE.Vector3(0, 0, 0);
+  let lengthOfArc;
+  let angleOfArc;
+
+  for (let i = 0; i < positions.count; i++) {
+    vTemp.fromBufferAttribute(positions, i);
+    lengthOfArc = vTemp.x - axisPosition.x;
+    angleOfArc = lengthOfArc / axisPosition.z;
+    vTemp.setX(0).setZ(-axisPosition.z).applyAxisAngle(axis, angleOfArc).add(axisPosition);
+    positions.setXYZ(i, vTemp.x, vTemp.y, vTemp.z);
+  }
+
+  // geometry.rotateY(0);
+  geometry.translate(0, 0, -radius);
+
+  const materials = textures.map((texture) => {
+    const material = new THREE.MeshStandardMaterial({ map: texture, side: THREE.DoubleSide });
+    material.side = THREE.DoubleSide;
+    return material;
+  });
+  const slideGroup = new THREE.Group();
+
+  materials.map((material, i) => {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.y = height / 2;
+    mesh.rotateOnWorldAxis(axis, (Math.PI * 2 * i) / numbSides);
+    // mesh.position.z = radius;
+    slideGroup.add(mesh);
+   
+    const helper = new THREE.BoxHelper(mesh, 0xffff00);
+    scene.add(helper);
+  });
+  scene.add(slideGroup);
+
+  // curvedRectangle = mesh;
+}
+
+function installListeners() {
+  window.addEventListener("resize", onWindowResize);
 }
 
 function onWindowResize() {
@@ -155,35 +246,132 @@ function onWindowResize() {
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
-function onPointerDown(event) {
-  action = ACTION_SELECT;
-  mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-  mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+function onKeyDown(event) {
+  switch (event.code) {
+    case "ArrowUp":
+    case "KeyW":
+      moveForward = true;
+      break;
+
+    case "ArrowLeft":
+    case "KeyA":
+      moveLeft = true;
+      break;
+
+    case "ArrowDown":
+    case "KeyS":
+      moveBackward = true;
+      break;
+
+    case "ArrowRight":
+    case "KeyD":
+      moveRight = true;
+      break;
+
+    case "Space":
+      if (canJump === true) dollyVelocity.y += 150;
+      canJump = false;
+      break;
+  }
+}
+
+function onKeyUp(event) {
+  switch (event.code) {
+    case "ArrowUp":
+    case "KeyW":
+      moveForward = false;
+      break;
+
+    case "ArrowLeft":
+    case "KeyA":
+      moveLeft = false;
+      break;
+
+    case "ArrowDown":
+    case "KeyS":
+      moveBackward = false;
+      break;
+
+    case "ArrowRight":
+    case "KeyD":
+      moveRight = false;
+      break;
+  }
+}
+
+function renderControls() {
+  if (!controls.isLocked) return;
+
+  time = performance.now();
+
+  camera.getWorldPosition(cameraWorldPosition);
+  camera.getWorldDirection(cameraWorldDirection);
+  raycaster.set(cameraWorldPosition, cameraWorldDirection);
+
+  const intersections = raycaster.intersectObjects(scene.children);
+  const onObject = intersections.length > 0;
+
+  delta = (time - prevTime) / 1000;
+
+  dollyVelocity.x -= dollyVelocity.x * 10.0 * delta;
+  dollyVelocity.z -= dollyVelocity.z * 10.0 * delta;
+  dollyVelocity.y -= 9.8 * 100.0 * delta; // 100.0 = mass
+
+  dollyDirection.z = Number(moveForward) - Number(moveBackward);
+  dollyDirection.x = Number(moveRight) - Number(moveLeft);
+  dollyDirection.normalize(); // this ensures consistent movements in all directions
+
+  if (moveForward || moveBackward) dollyVelocity.z -= dollyDirection.z * 50.0 * delta;
+  if (moveLeft || moveRight) dollyVelocity.x -= dollyDirection.x * 50.0 * delta;
+
+  if (onObject === true) {
+    dollyVelocity.y = Math.max(0, dollyVelocity.y);
+    canJump = true;
+  }
+
+  controls.moveRight(-dollyVelocity.x * delta);
+  controls.moveForward(-dollyVelocity.z * delta);
+  controls.getObject().position.y += (dollyVelocity.y * delta) / 10; // new behavior
+
+  if (controls.getObject().position.y < 1.8) {
+    dollyVelocity.y = 0;
+    controls.getObject().position.y = 1.8;
+    canJump = true;
+  }
+
+  prevTime = time;
+}
+
+function init() {
+  createScene();
+  createLights();
+  createGrid();
+  createRenderer();
+  createSky();
+  // createControls();
+  createRaycaster();
+  createStats();
+
+  createCurvedPlane();
+
+  installListeners();
+  initWebcamInput();
 }
 
 function animate() {
   requestAnimationFrame(animate);
-
-  if (action === ACTION_SELECT) {
-    rayCaster.setFromCamera(mouse, camera);
-    action = ACTION_NONE;
-    const intersects = rayCaster.intersectObjects(curveHandles, false);
-    if (intersects.length) {
-      const target = intersects[0].object;
-      control.attach(target);
-      scene.add(control);
-    }
-  }
-
-  if (flow) {
-    flow.moveAlongCurve(0.001);
-  }
-
-  render();
-}
-
-function render() {
+  // if (controls && controls.update) controls.update(); // to support damping
+  // renderControls();
   renderer.render(scene, camera);
-
-  stats.update();
+  camera.position.z = 3*Math.sin(performance.now() / 10000) ;
+  camera.position.x = 3*Math.cos(performance.now() / 10000) ;
+  camera.position.y = 0.3;
+  camera.lookAt(0,0.4,0);
+  // stats.update();
+ 
+  // console.log(camera);
 }
+
+window.addEventListener("click", ()=>{
+
+})
